@@ -49,9 +49,6 @@ def test_sdss_environment():
     sdss_config = SDSSConfig()
     if os.getenv('SAS_BASE_DIR'):
         assert sdss_config.sas_base_dir == os.getenv('SAS_BASE_DIR')
-    else:
-        assert sdss_config.sas_base_dir == os.path.join(os.path.expanduser('~'),
-                                                        'SAS')
 
 def test_manga(goodconfig):
     manga_config = MaNGAConfig(config_file=goodconfig)
