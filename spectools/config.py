@@ -1,3 +1,7 @@
+"""Define the class for configuration, make it easier to access data from 
+different projects
+"""
+
 import os
 import configparser
 import warnings
@@ -9,8 +13,10 @@ class ToolsConfig(object):
     def __init__(self, config_file=None):
         '''Initiate the class
 
-        Params:
-            config_file: specific the configuration file, None for the default
+        Parameters
+        ----------
+        config_file : str or None
+            specific the configuration file, None for the default
                          '~/.spectools'
         '''
         self.config = configparser.ConfigParser()
@@ -31,6 +37,8 @@ class SDSSConfig(ToolsConfig):
     """
 
     def __init__(self, config_file=None):
+        """access the configuration for SDSS from file or environment variables
+        """
         ToolsConfig.__init__(self, config_file=config_file)
         if 'sas' not in self.config_entries:
             self.config['sas'] = {}
@@ -48,6 +56,9 @@ class MaNGAConfig(SDSSConfig):
     """
     
     def __init__(self, config_file=None):
+        """access the configuration for MaNGA from file or environment 
+           variables
+        """
         SDSSConfig.__init__(self, config_file=config_file)
         if 'manga' not in self.config_entries:
             self.config['manga'] = {}
