@@ -36,12 +36,22 @@ def badconfig(config_file):
 
 def test_sdss_goodconfig(goodconfig):
     sdss_config = SDSSConfig(config_file=goodconfig)
+    os.environ["SAS_BASE_DIR"] = ""
     assert sdss_config.sas_base_dir == '/tmp/SAS'
 
 def test_sdss_badconfig(badconfig):
     sdss_config = SDSSConfig(config_file=badconfig)
-    assert sdss_config.sas_base_dir == os.path.join(os.path.expanduser('~'), 
+    os.environ["SAS_BASE_DIR"] = ""
+    assert sdss_config.sas_base_dir == os.path.join(os.path.expanduser('~'),
                                                     'SAS')
+
+def test_sdss_environment():
+    sdss_config = SDSSConfig()
+    if os.getenv('SAS_BASE_DIR'):
+        assert sdss_config.sas_base_dir == os.getenv('SAS_BASE_DIR')
+    else:
+        assert sdss_config.sas_base_dir == os.path.join(os.path.expanduser('~'),
+                                                        'SAS')
 
 def test_manga(goodconfig):
     manga_config = MaNGAConfig(config_file=goodconfig)
