@@ -11,6 +11,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 import spectools
 from  .utils import ppxf, miles_util, ppxf_util
+from spectools.exceptions import SpecToolsError
 
 class Spectrum(object):
     """The basic class for spectrum
@@ -185,7 +186,7 @@ class Spectrum(object):
         """
         # Only use the wavelength range in common between galaxy and stellar library.
         wave_mask = (self.wave > 3540*(1+self.z)) & (self.wave < 7400*(1+self.z))
-        self.flux_scale = np.ma.median(self.flux[wave_mask])
+        self.flux_scale = max(np.ma.median(self.flux[wave_mask]), 1.)
         flux = self.flux[wave_mask]/self.flux_scale
         if self.redcorr is not None:
             flux = flux * self.redcorr[wave_mask]
@@ -362,6 +363,8 @@ class Spectrum(object):
                       vsyst=dv, lam=wave, clean=False, mask=mask, component=component, 
                       quiet=quiet, gas_component=gas_component, 
                       gas_names=gas_names, gas_reddening=gas_reddening)
+        else:
+            raise SpecToolsError('Invalid mode for spectrum fitting!')
         
         # wrap relevant value into returned class 
         pp.flux_scale = self.flux_scale
