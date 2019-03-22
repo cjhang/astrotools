@@ -89,8 +89,10 @@ class Datacube(object):
         save_cube : bool, optional
             saving the fitted spectrum with different components into file, 
             default is True.
-        quiet : bool
+        quiet : bool, optional
             set it to True to suppress the output, default False.
+        kwargs : optional
+            the additional parameters that pass to ppxf
 
         Returns
         -------
@@ -118,12 +120,11 @@ class Datacube(object):
                     miles.log_lam_temp, lam_range_gal, FWHM_gal, quiet=quiet,
                     **kwargs)
 
-        # prapare the arrays to save the fitted data
-        ## for maps, each emission should including flux, flux_err, v, sigma
-        multimap = dict(zip(gas_names, 
-                        np.zeros((len(gas_names), 4, naxis1, naxis2))))
-        ## for cubes,should include three coponents: balmer, forbidden, broad
-        datacube = np.zeros((*self.flux.shape, 3)) 
+        # define the class to store fitted data
+        fitmap = FitMap(gas_names, (naxis1, naxis2))
+        fitcube = FitCube(self.flux.shape)
+        fitcube.wave = self.wave
+        fitcube.flux = self.flux
 
         for x in range(naxis1):
             for y in range(naxis2):
@@ -190,39 +191,160 @@ class Datacube(object):
                 rel_v = dict(zip(pp.gas_names, v - 299792.485 * np.log(1+pp.z)))
                 sigma = dict(zip(pp.gas_names, sigma))
                 for name in pp.gas_names:
-                    multimap[name][:, x, y] = gas_flux[name], \
-                                              gas_flux_err[name],\
-                                              rel_v[name], sigma[name]
+                    fitmap[name][:, x, y] = gas_flux[name], \
+                                            gas_flux_err[name],\
+                                            rel_v[name], sigma[name]
                 if save_cube:
-                    # balmer, forbidden, and broad lines
-                    for comp_n in [0, 1, 2]: 
-                        wave_mask = ((self.wave >= pp.lam[0]) 
-                                     & (self.wave <= pp.lam[-1]))
-                        comp_select = np.where(pp.component == comp_n)
-                        cube_comp = pp.matrix[:, comp_select] @ (
-                                    pp.weights[comp_select] * pp.flux_scale)
-                        datacube[wave_mask, x, y, comp_n] = cube_comp[:, 0]
+                    wave_mask = ((self.wave >= pp.lam[0]) 
+                                 & (self.wave <= pp.lam[-1]))
+                    cube_fits = pp.matrix @ (pp.weights * pp.flux_scale)
+                    fitcube[wave_mask, x, y] = cube_fits
+                    # # balmer, forbidden, and broad lines
+                    # for comp_n in [0, 1, 2]: 
+                        # wave_mask = ((self.wave >= pp.lam[0]) 
+                                     # & (self.wave <= pp.lam[-1]))
+                        # comp_select = np.where(pp.component == comp_n)
+                        # cube_comp = pp.matrix[:, comp_select] @ (
+                                    # pp.weights[comp_select] * pp.flux_scale)
+                        # datacube[wave_mask, x, y, comp_n] = cube_comp[:, 0]
         if save_map:
-            hdr = fits.Header()
-            hdr['AUTHER'] = 'cjhang'
-            hdr['COMMENT'] = "Fitting emission lines with broad lines"
-            primary_hdu = fits.PrimaryHDU(header=hdr)
-            hdu_list = [primary_hdu]
-            for name in gas_names:
-                hdu_list.append(fits.ImageHDU(multimap[name], name=name))
-            hdus = fits.HDUList(hdu_list)
-            hdus.writeto('{}/{}.fits'.format(directory, filename), 
-                         overwrite=True)
-
+            fitmap.save(filename, directory=directory)
         if save_cube:
-            hdu_cubes_wave = fits.ImageHDU(self.wave, name='wave')
-            hdu_cubes_flux = fits.ImageHDU(self.flux.data, name='flux')
-            #hdu_cubes_emlines = fits.ImageHDU(self.emlines. name='emlines')
-            hdu_cubes_fits = fits.ImageHDU(datacube, name='fits')
-            hdu_cubes = [primary_hdu, hdu_cubes_wave, hdu_cubes_flux, 
-                         hdu_cubes_fits]
-            hdu_cubes = fits.HDUList(hdu_cubes)
-            hdu_cubes.writeto('{}/{}-cubes.fits'.format(directory, filename), 
-                              overwrite=True)
+            fitcube.save(filename, directory=directory)
 
+class FitMap(object):
+
+    """The class to store fitted results of Datacube"""
+
+    def __init__(self, gas_names, shapes):
+        """store flux and kinemtic data for every emission line
+
+        Parameters
+        ----------
+        gas_names : array_like
+            the names of every emission line
+        shapes : array_like
+            the dimension of the map
+        comments : str, optional
+            comments need to be included in the fits header
+
+        """
+        self.gas_names = gas_names
+        
+        # each emission lines should include flux, flux_err, v, sigma
+        self.data = dict(zip(gas_names, 
+                        np.zeros((len(gas_names), 4, *shapes))))
+        
+    def __getitem__(self, gas_name):
+        """access the data like numpy array
+
+        Parameters
+        ----------
+        gas_names : str
+            the key of the multimap dictionary
+        """
+        return self.data[gas_name]
+
+    def save(self, filename, auther_name=None, comments=None, directory=None):
+        """save the fitted map into fits file
+
+        Parameters
+        ----------
+        filename : str
+            the name of the saved file
+        auther_name : str, optional
+            the name of the auther
+        comments : str, optional
+            the additional comments imformation added to the fits header
+        directory : str, optional
+            the desired destination to store the fitted data
+
+        """
+        hdr = fits.Header()
+        hdr['AUTHER'] = auther_name
+        if comments is None:
+            comments = "Fitting emission lines with broad lines"
+        if directory is None:
+            directory = './'
+        hdr['COMMENT'] = comments
+        primary_hdu = fits.PrimaryHDU(header=hdr)
+        hdu_list = [primary_hdu]
+        for name in self.gas_names:
+            hdu_list.append(fits.ImageHDU(self.data[name], name=name))
+        hdus = fits.HDUList(hdu_list)
+        hdus.writeto('{}/{}-maps.fits'.format(directory, filename), 
+                     overwrite=True)
+
+class FitCube(object):
+
+    """the class to store the fitted spectrum data"""
+
+    def __init__(self, shapes):
+        """store the two dimensional fitted spectrum
+
+        Parameters
+        ----------
+        shapes : array_like
+            the dimensions of the integrated field units
+
+
+        """
+        self.wave = None
+        self.flux = np.zeros(shapes)
+        self.data = np.zeros(shapes)
+
+    def __getitem__(self, index):
+        """access the fitted spectrum like ndarray
+
+        Parameters
+        ----------
+        index : array_like
+            slice index of the data of FitCube
+
+        """
+        return self.data[index]
+
+    def __setitem__(self, index, value):
+        """set values
+        
+        Parameters
+        ----------
+        index : array_like
+            slice index of the self.data
+        value : array_like
+            new value assigned to self.data
+        """
+        self.data[index] = value
+        
+
+    def save(self, filename, auther_name=None, comments=None, directory=None):
+        """save the fitted spectrum
+
+        Parameters
+        ----------
+        auther_name : str, optional
+            the name of the auther
+        comments : str, optional
+            the additional comments imformation added to the fits header
+        directory : str, optional
+            the desired destination to store the fitted data
+
+        """
+        hdr = fits.Header()
+        hdr['AUTHER'] = auther_name
+        if comments is None:
+            comments = "Fitting emission lines with broad lines"
+        if directory is None:
+            directory = './'
+        hdr['COMMENT'] = comments
+        primary_hdu = fits.PrimaryHDU(header=hdr)
+        hdu_cubes_wave = fits.ImageHDU(self.wave, name='wave')
+        hdu_cubes_flux = fits.ImageHDU(self.flux, name='flux')
+        #hdu_cubes_emlines = fits.ImageHDU(self.emlines. name='emlines')
+        hdu_cubes_fits = fits.ImageHDU(self.data, name='fits')
+        hdu_cubes = [primary_hdu, hdu_cubes_wave, hdu_cubes_flux, 
+                     hdu_cubes_fits]
+        hdu_cubes = fits.HDUList(hdu_cubes)
+        hdu_cubes.writeto('{}/{}-cubes.fits'.format(directory, filename), 
+                          overwrite=True)
 
