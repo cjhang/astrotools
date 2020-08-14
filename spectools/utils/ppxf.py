@@ -1,5 +1,5 @@
 """
-    Copyright (C) 2001-2019, Michele Cappellari
+    Copyright (C) 2001-2020, Michele Cappellari
     E-mail: michele.cappellari_at_physics.ox.ac.uk
 
     Updated versions of the software are available from my web page
@@ -10,8 +10,8 @@
     "Penalized Pixel-Fitting method by Cappellari & Emsellem (2004)
     as upgraded in Cappellari (2017)".
 
-    http://adsabs.harvard.edu/abs/2004PASP..116..138C
-    http://adsabs.harvard.edu/abs/2017MNRAS.466..798C
+    http://ui.adsabs.harvard.edu/abs/2004PASP..116..138C
+    http://ui.adsabs.harvard.edu/abs/2017MNRAS.466..798C
 
     This software is provided as is without any warranty whatsoever.
     Permission to use, for non-commercial purposes is granted.
@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 from numpy.polynomial import legendre, hermite
 from scipy import optimize, linalg, special
 
-from . import capfit
+from .capfit import capfit, lsqlin, cov_err
 
 ################################################################################
 
@@ -59,23 +59,6 @@ def trigval(x, c):
 
     """
     return trigvander(x, c.size - 1) @ c
-
-################################################################################
-
-def nnls_flags(A, b, npoly):
-    """
-    Solves min||A*x - b|| with
-    x[j] >= 0 for j >= npoly
-    x[j] free for j < npoly
-    where A[m, n], b[m], x[n]
-
-    """
-    m, n = A.shape
-    AA = np.hstack([A, -A[:, :npoly]])
-    x = optimize.nnls(AA, b)[0]
-    x[:npoly] -= x[n:]
-
-    return x[:n]
 
 ################################################################################
 
@@ -117,7 +100,8 @@ def robust_sigma(y, zero=False):
 
 def reddening_cal00(lam, ebv):
     """
-    Reddening curve of Calzetti et al. (2000, ApJ, 533, 682; here C+00).
+    Reddening curve of `Calzetti et al. (2000)
+    <http://ui.adsabs.harvard.edu/abs/2000ApJ...533..682C>`_
     This is reliable between 0.12 and 2.2 micrometres.
     - LAMBDA is the restframe wavelength in Angstrom of each pixel in the
       input galaxy spectrum (1 Angstrom = 1e-4 micrometres)
@@ -131,7 +115,7 @@ def reddening_cal00(lam, ebv):
 
     # C+00 equation (3) but extrapolate for lam > 2.2
     # C+00 equation (4) (into Horner form) but extrapolate for lam < 0.12
-    k1 = rv + np.where(lam >= 6300, 2.659*(1.040*ilam - 1.857),
+    k1 = rv + np.where(lam >= 6300, 2.76536*ilam - 4.93776,
                        ilam*((0.029249*ilam - 0.526482)*ilam + 4.01243) - 5.7328)
     fact = 10**(-0.4*ebv*k1.clip(0))  # Calzetti+00 equation (2) with opposite sign
 
@@ -139,7 +123,7 @@ def reddening_cal00(lam, ebv):
 
 ################################################################################
 
-def bvls_solve(A, b, npoly):
+def solve_linear(A, b, npoly, A_ineq, b_ineq, A_eq, b_eq):
 
     # No need to enforce positivity constraints if fitting one single template:
     # use faster linear least-squares solution instead of NNLS.
@@ -149,7 +133,7 @@ def bvls_solve(A, b, npoly):
     elif n == npoly + 1:        # Fitting a single template
         soluz = linalg.lstsq(A, b)[0]
     else:                       # Fitting multiple templates
-        soluz = nnls_flags(A, b, npoly)
+        soluz = lsqlin(A, b, A_ineq, b_ineq, A_eq, b_eq)
 
     return soluz
 
@@ -158,8 +142,8 @@ def bvls_solve(A, b, npoly):
 def losvd_rfft(pars, nspec, moments, nl, ncomp, vsyst, factor, sigma_diff):
     """
     Analytic Fourier Transform (of real input) of the Gauss-Hermite LOSVD.
-    Equation (38) of Cappellari M., 2017, MNRAS, 466, 798
-    http://adsabs.harvard.edu/abs/2017MNRAS.466..798C
+    Equation (38) of `Cappellari (2017)
+    <https://ui.adsabs.harvard.edu/abs/2017MNRAS.466..798C>`_
 
     """
     losvd_rfft = np.empty((nl, ncomp, nspec), dtype=complex)
@@ -187,8 +171,8 @@ def losvd_rfft(pars, nspec, moments, nl, ncomp, vsyst, factor, sigma_diff):
 def regularization(a, npoly, npix, nspec, reg_dim, reg_ord, regul):
     """
     Add first or second order 1D, 2D or 3D linear regularization.
-    Equation (25) of Cappellari M., 2017, MNRAS, 466, 798
-    http://adsabs.harvard.edu/abs/2017MNRAS.466..798C
+    Equation (25) of `Cappellari (2017)
+    <https://ui.adsabs.harvard.edu/abs/2017MNRAS.466..798C>`_
 
     """
     b = a[:, npoly : npoly + np.prod(reg_dim)].reshape(-1, *reg_dim)
@@ -250,7 +234,7 @@ def regularization(a, npoly, npix, nspec, reg_dim, reg_ord, regul):
 
 ################################################################################
 
-class ppxf(object):
+class ppxf:
     """
     pPXF Purpose
     ------------
@@ -260,13 +244,11 @@ class ppxf(object):
     to an observed spectrum in pixel space, using the Penalized PiXel-Fitting
     (``pPXF``) method originally described in
 
-    `Cappellari & Emsellem (2004)
-    <http://adsabs.harvard.edu/abs/2004PASP..116..138C>`_
+    `Cappellari & Emsellem (2004) <https://ui.adsabs.harvard.edu/abs/2004PASP..116..138C>`_
 
     and significantly upgraded in
 
-    `Cappellari (2017)
-    <http://adsabs.harvard.edu/abs/2017MNRAS.466..798C>`_
+    `Cappellari (2017) <https://ui.adsabs.harvard.edu/abs/2017MNRAS.466..798C>`_
 
     The following key optional features are also available:
 
@@ -282,23 +264,26 @@ class ppxf(object):
         either be fitted, or held fixed to a given value, while other parameters
         are fitted. Alternatively, parameters can be constrained to lie within
         given limits or even tied by simple relations to other parameters.
-    5)  Additive and/or multiplicative polynomials can be included to adjust the
+    5)  One can enforce linear equality/inequality constraints on either the
+        template weights or the kinematic parameters.
+    6)  Additive and/or multiplicative polynomials can be included to adjust the
         continuum shape of the template to the observed spectrum.
-    6)  Iterative sigma clipping can be used to clean the spectrum.
-    7)  It is possible to fit a mirror-symmetric LOSVD to two spectra at the
+    7)  Iterative sigma clipping can be used to clean the spectrum.
+    8)  It is possible to fit a mirror-symmetric LOSVD to two spectra at the
         same time. This is useful for spectra taken at point-symmetric spatial
         positions with respect to the center of an equilibrium stellar system.
-    8)  One can include sky spectra in the fit, to deal with cases where the sky
+    9)  One can include sky spectra in the fit, to deal with cases where the sky
         dominates the observed spectrum and an accurate sky subtraction is
         critical.
-    9)  One can derive an estimate of the reddening in the spectrum. This can be
+    10) One can derive an estimate of the reddening in the spectrum. This can be
         done independently for the stellar spectrum or the Balmer emission lines.
-    10) The covariance matrix can be input instead of the error spectrum, to
+    11) The covariance matrix can be input instead of the error spectrum, to
         account for correlated errors in the spectral pixels.
-    11) One can specify the weights fraction between two kinematics components,
+    12) One can specify the weights fraction between two kinematics components,
         e.g. to model bulge and disk contributions.
-    12) One can use templates with higher resolution than the galaxy, to
+    13) One can use templates with higher resolution than the galaxy, to
         improve the accuracy of the LOSVD extraction at low dispersion.
+
 
     Calling Sequence
     ----------------
@@ -308,7 +293,8 @@ class ppxf(object):
         from ppxf.ppxf import ppxf
 
         pp = ppxf(templates, galaxy, noise, velscale, start,
-                 bias=None, bounds=None, clean=False, component=0, degree=4,
+                 bias=None, bounds=None, clean=False, component=0,
+                 constr_templ={}, constr_kinem={}, degree=4,
                  fixed=None, fraction=None, ftol=1e-4, gas_component=None,
                  gas_names=None, gas_reddening=None, goodpixels=None, lam=None,
                  linear=False, mask=None, method='capfit', mdegree=0, moments=2,
@@ -351,7 +337,7 @@ class ppxf(object):
         restframe wavelength, before doing the ``pPXF`` fit. This can be done
         by dividing the observed wavelength by ``(1 + z)``, where ``z`` is a
         rough estimate of the galaxy redshift, before the logarithmic
-        rebinning. See Section 2.4 of Cappellari (2017) for details.
+        rebinning. See Section 2.4 of `Cappellari (2017)`_ for details.
 
         ``galaxy`` can also be an array of dimensions ``galaxy[nGalPixels, 2]``
         containing two spectra to be fitted, at the same time, with a
@@ -360,7 +346,7 @@ class ppxf(object):
         equilibrium stellar system.
         For a discussion of the usefulness of this two-sided fitting see e.g.
         Section 3.6 of `Rix & White (1992)
-        <http://adsabs.harvard.edu/abs/1992MNRAS.254..389R>`_.
+        <http://ui.adsabs.harvard.edu/abs/1992MNRAS.254..389R>`_.
 
         IMPORTANT: (1) For the two-sided fitting the ``vsyst`` keyword has to
         be used. (2) Make sure the spectra are rescaled to be not too many
@@ -383,9 +369,9 @@ class ppxf(object):
         ``noise=np.diag(errvec**2)`` (note squared!).
 
         IMPORTANT: the penalty term of the ``pPXF`` method is based on the
-        *relative* change of the fit residuals. For this reason the penalty
+        *relative* change of the fit residuals. For this reason, the penalty
         will work as expected even if no reliable estimate of the ``noise`` is
-        available (see Cappellari & Emsellem [2004] for details). If no
+        available (see `Cappellari & Emsellem (2004)`_ for details). If no
         reliable noise is available this keyword can just be set to::
 
             noise = np.ones_like(galaxy)  # Same weight for all pixels
@@ -400,7 +386,7 @@ class ppxf(object):
         ``velscale`` is *defined* in ``pPXF`` by
         ``velscale = c*Delta[np.log(lambda)]``, which is approximately
         ``velscale ~ c*Delta(lambda)/lambda``.
-        See Section 2.3 of Cappellari (2017) for details.
+        See Section 2.3 of `Cappellari (2017)`_ for details.
     start:
         Vector, or list/array of vectors ``[start1, start2, ...]``, with the
         initial estimate for the LOSVD parameters.
@@ -425,7 +411,7 @@ class ppxf(object):
         starting ``sigma >= 3*velscale`` in km/s (i.e. 3 pixels). In fact when
         the sigma is very low, and far from the true solution, the ``chi^2`` of
         the fit becomes weakly sensitive to small variations in sigma (see
-        ``pPXF`` paper). In some instances the near-constancy of ``chi^2`` may
+        ``pPXF`` paper). In some instances, the near-constancy of ``chi^2`` may
         cause premature convergence of the optimization.
 
         In the case of two-sided fitting a good starting value for the velocity
@@ -454,16 +440,16 @@ class ppxf(object):
         solution (including ``[V, sigma]``) will be noisier in that case. The
         default ``bias`` should provide acceptable results in most cases, but
         it would be safe to test it with Monte Carlo simulations. This keyword
-        precisely corresponds to the parameter ``lambda`` in the Cappellari &
-        Emsellem (2004) paper. Note that the penalty depends on the *relative*
-        change of the fit residuals, so it is insensitive to proper scaling of
-        the ``noise`` vector. A nonzero ``bias`` can be safely used even
-        without a reliable ``noise`` spectrum, or with equal weighting for all
-        pixels.
+        precisely corresponds to the parameter ``lambda`` in the
+        `Cappellari & Emsellem (2004)`_ paper.
+        Note that the penalty depends on the *relative* change of the fit
+        residuals, so it is insensitive to proper scaling of the ``noise``
+        vector. A nonzero ``bias`` can be safely used even without a reliable
+        ``noise`` spectrum, or with equal weighting for all pixels.
     bounds:
         Lower and upper bounds for every kinematic parameter. This is an array,
         or list of arrays, with the same dimensions as ``start``, except for
-        the last one, which is two. In practice, for every elements of
+        the last one, which is two. In practice, for every element of
         ``start`` one needs to specify a pair of values ``[lower, upper]``.
 
         EXAMPLE: We want to fit two kinematic components, with 4 moments for
@@ -496,13 +482,105 @@ class ppxf(object):
 
             component = [0, 0, ... 0, 1, 1, ... 1]
 
-        This keyword is especially useful when fitting both emission (gas) and
-        absorption (stars) templates simultaneously (see example for
+        This keyword is especially useful when fitting both emissions (gas) and
+        absorption (stars) templates simultaneously (see the example for
         ``moments`` keyword).
+    constr_templ: dict (optional)
+        This is specified by the following dictionary, where either the ``_eq``
+        or the ``_ineq`` keys can be omitted if not needed::
+
+            constr_templ = {"A_ineq": A_ineq, "b_ineq": b_ineq, "A_eq": A_eq, "b_eq": b_eq}
+
+        It enforces linear constraints on the template weights during the fit.
+        The resulting pPXF solution will satisfy the following inequalities
+        and/or equalities::
+
+            A_ineq @ pp.weights <= b_ineq
+            A_eq @ pp.weights == b_eq
+
+        Inequality can be used e.g. to constrain the fluxes of emission lines to
+        lie within prescribed ranges.
+        Equalities can be used e.g. to force the weights for different kinematic
+        components to contain prescribed fractions of the total weights.
+
+        EXAMPLES: We are fitting a spectrum using four templates, the first two
+        templates belong to one kinematic component and the rest two the other.
+        This implies we have::
+
+            component=[0, 0, 1, 1]
+
+        then we can set the constraint that the sum of the weights of the first
+        kinematic component is equal to ``fraction`` times the total as follows
+        [cfr. equation 30 of `Cappellari (2017)`_]::
+
+            A_eq = [[fraction - 1, fraction - 1, fraction, fraction]]
+            b_eq = [0]
+            constr_templ = {"A_eq": A_eq, "b_eq": b_eq}
+
+        An identical result can be obtained in this case using the ``fraction``
+        keyword, but ``constr_templ`` additionally allows for general linear
+        constraints for multiple kinematic components.
+
+        We can constrain the ratio of the first two templates weights to lie in
+        the interval ``ratio_min <= w[0]/w[1] <= ratio_max`` as follows::
+
+            A_ineq = [[-1, ratio_min, 0, 0],    # -w[0] + ratio_min*w[1] < 0
+                      [1, -ratio_max, 0, 0]]    # +w[0] - ratio_max*w[1] < 0
+            b_ineq = [0, 0]
+            constr_templ = {"A_ineq": A_ineq, "b_ineq": b_ineq}
+
+    constr_kinem: dict (optional)
+        This is specified by the following dictionary, where either the ``_eq``
+        or the ``_ineq`` keys can be omitted if not needed::
+
+            constr_kinem = {"A_ineq": A_ineq, "b_ineq": b_ineq, "A_eq": A_eq, "b_eq": b_eq}
+
+        It enforces linear constraints on the kinematic during the fit.
+        The resulting pPXF solution will satisfy the following inequalities
+        and/or equalities::
+
+            params = np.ravel(pp.sol)  # Unravel for multiple components
+            A_ineq @ params <= b_ineq
+            A_eq @ params == b_eq
+
+        IMPORTANT: the starting guess ``start`` must satisfy the constraints,
+        or in other words, it must lie in the feasible region.
+
+        Inequalities can be used e.g. to force one kinematic component to have
+        larger velocity or dispersion than another one. This is useful e.g. when
+        extracting two stellar kinematic components or when fitting both narrow
+        and broad components of gas emission lines.
+
+        EXAMPLES: We want to fit two kinematic components, with two moments for
+        both the first and second component. In this case::
+
+            moments = [2, 2]
+            start = [[V1, sigma1], [V2, sigma2]]
+
+        then we can set the constraint ``sigma1 > 3*sigma2`` as follows::
+
+            A_ineq = [[0, -1, 0, 3]]  # -sigma1 + 3*sigma2 < 0
+            b_ineq = [0]
+            constr_kinem = {"A_ineq": A_ineq, "b_ineq": b_ineq}
+
+        We can set the constraint ``sigma1 > sigma2 + 2*velscale`` as follows::
+
+            A_ineq = [[0, -1, 0, 1]]  # -sigma1 + sigma2 < -2*velscale
+            b_ineq = [-2]             # kinem. in pixels (-2 --> -2*velscale)!
+            constr_kinem =  {"A_ineq": A_ineq, "b_ineq": b_ineq}
+
+        We can set both the constraints ``V1 > V2`` and
+        ``sigma1 > sigma2 + 2*velscale`` as follows::
+
+            A_ineq = [[-1, 0, 1, 0],   # -V1 + V2 < 0
+                      [0, -1, 0, 1]]   # -sigma1 + sigma2 < -2*velscale
+            b_ineq = [0, -2]           # kinem. in pixels (-2 --> -2*velscale)!
+            constr_kinem =  {"A_ineq": A_ineq, "b_ineq": b_ineq}
+
     clean:
         Set this keyword to use the iterative sigma clipping method described
         in Section 2.1 of `Cappellari et al. (2002)
-        <http://adsabs.harvard.edu/abs/2002ApJ...578..787C>`_.
+        <http://ui.adsabs.harvard.edu/abs/2002ApJ...578..787C>`_.
         This is useful to remove from the fit unmasked bad pixels, residual gas
         emissions or cosmic rays.
 
@@ -547,14 +625,11 @@ class ppxf(object):
 
         This is useful e.g. to try to kinematically decompose bulge and disk.
 
-        IMPORTANT: The ``templates`` and ``galaxy`` spectra should be
-        normalized with ``mean ~ 1`` (as order of magnitude) for the
-        ``fraction`` keyword to work as expected. A warning is printed if this
-        is not the case and the resulting output ``fraction`` is inaccurate.
-
         The remaining kinematic components (``component > 1``) are left free,
         and this allows, for example, to still include gas emission line
         components.
+        More general linear constraints, for multiple components at the same
+        time, can be specified using the ``constr_templ`` keyword.
     ftol:
         Fractional tolerance for stopping the non-linear minimization (default
         1e-4).
@@ -580,10 +655,10 @@ class ppxf(object):
         Set this keyword to an initial estimate of the gas reddening
         ``E(B-V) >= 0`` to fit a positive gas reddening together with the
         kinematics and the templates. This reddening is applied only to the gas
-        templates, namely to the templates with corresponding element of
+        templates, namely to the templates with the corresponding element of
         ``gas_component=True``. The fit assumes by default the extinction curve
         of `Calzetti et al. (2000)
-        <http://adsabs.harvard.edu/abs/2000ApJ...533..682C>`_ but any other
+        <http://ui.adsabs.harvard.edu/abs/2000ApJ...533..682C>`_ but any other
         prescription can be passed via the ``reddening_func`` keyword.
     goodpixels:
         Integer vector containing the indices of the good pixels in the
@@ -683,10 +758,10 @@ class ppxf(object):
         Set this keyword to an initial estimate of the stellar reddening
         ``E(B-V) >= 0`` to fit a positive stellar reddening together with the
         kinematics and the templates. This reddening is applied only to the
-        stellar templates, namely to the templates with corresponding element of
-        ``gas_component=False``, or to all templates, if ``gas_component`` is
-        not set. The fit assumes by default the extinction curve of
-        Calzetti et al. (2000, ApJ, 533, 682) but any other prescription can be
+        stellar templates, namely to the templates with the corresponding
+        element of ``gas_component=False``, or to all templates, if
+        ``gas_component`` is not set. The fit assumes by default the extinction
+        curve of `Calzetti et al. (2000)`_ but any other prescription can be
         passed via the ``reddening_func`` keyword.
 
         IMPORTANT: The ``mdegree`` keyword cannot be used when ``reddening`` is
@@ -698,19 +773,20 @@ class ppxf(object):
         whether the array of ``templates`` has two, three or four dimensions
         respectively.
         Large ``regul`` values correspond to smoother ``weights`` output. When
-        this keyword is nonzero the solution will be a trade-off between
+        this keyword is nonzero the solution will be a trade-off between the
         smoothness of ``weights`` and goodness of fit.
 
-        Section 3.5 of Cappellari (2017) gives a description of regularization.
+        Section 3.5 of `Cappellari (2017)`_ gives a description of
+        regularization.
 
         When fitting multiple kinematic ``component`` the regularization is
         applied only to the first ``component = 0``, while additional
         components are not regularized. This is useful when fitting stellar
         population together with gas emission lines. In that case, the SSP
         spectral templates must be given first and the gas emission templates
-        are given last. In this situation one has to use the ``reg_dim``
+        are given last. In this situation, one has to use the ``reg_dim``
         keyword (below), to give ``pPXF`` the dimensions of the population
-        parameters (e.g. ``nAge``, ``nMetal``, ``nAlpha``). An usage example is
+        parameters (e.g. ``nAge``, ``nMetal``, ``nAlpha``). A usage example is
         given in the file ``ppxf_example_population_gas_sdss.py``.
 
         The effect of the regularization scheme is the following:
@@ -868,7 +944,7 @@ class ppxf(object):
             tied = [['', '', '', ''], ['', ''], ['', 'p[5]']]
 
         NOTE: One could in principle use the ``tied`` keyword to completely tie
-        the LOSVD of two kinematic components. However this same effect is more
+        the LOSVD of two kinematic components. However, this same effect is more
         efficient achieved by assigning them to the same kinematic component
         using the ``component`` keyword.
     trig:
@@ -926,9 +1002,11 @@ class ppxf(object):
         computed as ``stellar_spectrum = pp.bestfit - pp.gas_bestfit``
     .gas_flux:
         Vector with the integrated flux (in counts) of all lines set as
-        ``True`` in the input ``gas_component`` keyword. If a line is composed
-        of a doublet, the flux is that of both lines. If the Balmer series is
-        input as a single template, this is the flux of the entire series.
+        ``True`` in the input ``gas_component`` keyword. This is the flux of
+        individual gas templates, which may include multiple lines.
+        This implies that, if a gas template describes a doublet, the flux is
+        that of both lines. If the Balmer series is input as a single template,
+        this is the flux of the entire series.
 
         The returned fluxes are not corrected in any way and in particular, no
         reddening correction is applied. In other words, the returned
@@ -1003,7 +1081,7 @@ class ppxf(object):
 
         IMPORTANT: when running Monte Carlo simulations to determine the error,
         the penalty (``bias``) should be set to zero, or better to a very small
-        value. See Section 3.4 of Cappellari & Emsellem (2004) for an
+        value. See Section 3.4 of `Cappellari & Emsellem (2004)`_ for an
         explanation.
     .polyweights:
         This is largely superseded by the ``.apoly`` attribute above.
@@ -1022,7 +1100,7 @@ class ppxf(object):
 
         When doing a two-sided fitting (see help for ``galaxy`` parameter), the
         additive polynomials are allowed to be different for the left and right
-        spectrum. In that case the output weights of the additive polynomials
+        spectrum. In that case, the output weights of the additive polynomials
         alternate between the first (left) spectrum and the second (right)
         spectrum.
     .matrix:
@@ -1071,7 +1149,7 @@ class ppxf(object):
 
         IMPORTANT: The precise relation between the output ``pPXF`` velocity
         and redshift is ``Vel = c*np.log(1 + z)``. See Section 2.3 of
-        Cappellari (2017) for a detailed explanation.
+        `Cappellari (2017)`_ for a detailed explanation.
 
         These are the default safety limits on the fitting parameters
         (they can be changed using the ``bounds`` keyword):
@@ -1125,7 +1203,7 @@ class ppxf(object):
     velocity-distribution (LOSVD) virtually unaffected, when it is well sampled
     and the signal-to-noise ratio (``S/N``) is sufficiently high.
 
-    EXAMPLE: If you expect an LOSVD with up to a high ``h4 ~ 0.2`` and your
+    EXAMPLE: If you expect a LOSVD with up to a high ``h4 ~ 0.2`` and your
     adopted penalty (``bias``) biases the solution towards a much lower 
     ``h4 ~ 0.1``, even when the measured ``sigma > 3*velscale`` and the S/N is
     high, then you are *misusing* the ``pPXF`` method!
@@ -1138,19 +1216,19 @@ class ppxf(object):
        ``(S/N)_min``;
     2. Perform a fit of your kinematics *without* penalty (keyword ``bias=0``).
        The solution will be noisy and may be affected by spurious solutions,
-       however this step will allow you to check the expected mean ranges in
+       however, this step will allow you to check the expected mean ranges in
        the Gauss-Hermite parameters ``[h3, h4]`` for the galaxy under study;
     3. Perform a Monte Carlo simulation of your spectra, following e.g. the
        included ``ppxf_example_simulation.py`` routine. Adopt as ``S/N`` in the
        simulation the chosen value ``(S/N)_min`` and as input ``[h3, h4]`` the
        maximum representative values measured in the non-penalized ``pPXF`` fit
        of the previous step;
-    4. Choose as penalty (``bias``) the *largest* value such that, for 
+    4. Choose as the penalty (``bias``) the *largest* value such that, for
        ``sigma > 3*velscale``, the mean difference delta between the output 
        ``[h3, h4]`` and the input ``[h3, h4]`` is well within (e.g. 
        ``delta ~ rms/3``) the rms scatter of the simulated values (see an
        example in Fig. 2 of `Emsellem et al. 2004
-       <http://adsabs.harvard.edu/abs/2004MNRAS.352..721E>`_).
+       <http://ui.adsabs.harvard.edu/abs/2004MNRAS.352..721E>`_).
 
     Problems with Your First Fit?
     -----------------------------
@@ -1188,7 +1266,7 @@ class ppxf(object):
                  plot=False, quiet=False, reddening=None, reddening_func=None,
                  reg_dim=None, reg_ord=2, regul=0, sigma_diff=0, sky=None,
                  templates_rfft=None, tied=None, trig=False,
-                 velscale_ratio=1, vsyst=0):
+                 velscale_ratio=1, vsyst=0, constr_templ={}, constr_kinem={}):
 
         # Do extensive checking of possible input errors
         self.galaxy = galaxy
@@ -1403,7 +1481,7 @@ class ppxf(object):
         # Pad with zeros when `start[j]` has fewer elements than `moments[j]`
         for j, (st, mo) in enumerate(zip(start1, self.moments)):
             st = np.asarray(st, dtype=float)   # Make sure starting guess is float
-            start1[j] = np.pad(st, (0, mo - len(st)), 'constant')
+            start1[j] = np.pad(st, [0, mo - len(st)])
 
         if bounds is not None:
             if self.ncomp == 1:
@@ -1425,6 +1503,8 @@ class ppxf(object):
                 tied = [tied]
             assert list(map(len, tied)) == list(map(len, start1)), \
                 "TIED and START must have the same shape"
+
+        self.set_linear_constraints(constr_templ, constr_kinem, method)
 
         if galaxy.ndim == 2:
             # two-sided fitting of LOSVD
@@ -1459,8 +1539,6 @@ class ppxf(object):
         self.bias = 0   # Evaluate residuals without bias
         err = self.linear_fit(params)
         self.ndof = err.size - (perror > 0).sum()
-        self.vars_num = err.size
-        self.params_num = params.size
         self.chi2 = np.sum(err**2)/self.ndof   # Chi**2/DOF
         self.format_output(params, perror)
         if plot:   # Plot final data-model comparison if required.
@@ -1468,31 +1546,62 @@ class ppxf(object):
 
 ################################################################################
 
+    def set_linear_constraints(self, constr_templ, constr_kinem, method):
+
+        self.ngh = self.moments.sum()    # Parameters of the LOSVD only
+        n_apoly = (self.degree + 1)*self.nspec
+        n_mpoly = self.mdegree*self.nspec
+
+        self.npars = self.ngh + n_mpoly
+        if self.reddening is not None:
+            self.npars += 1
+        if self.gas_reddening is not None:
+            self.npars += 1
+
+        self.nsky = 0 if self.sky is None else self.sky.shape[1]
+
+        pos = self.ntemp + self.nsky*self.nspec
+        self.A_ineq_templ = np.pad(-np.identity(pos), [(0, 0), (n_apoly, 0)])
+        self.b_ineq_templ = np.zeros(pos)
+        self.A_eq_templ = self.b_eq_templ = None
+        if constr_templ != {}:
+            if "A_ineq" in constr_templ:
+                A_ineq = np.pad(constr_templ["A_ineq"], [(0, 0), (n_apoly, self.nsky*self.nspec)])
+                self.A_ineq_templ = np.vstack([self.A_ineq_templ, A_ineq])
+                self.b_ineq_templ = np.append(self.b_ineq_templ, constr_templ["b_ineq"])
+            if "A_eq" in constr_templ:
+                self.A_eq_templ = np.pad(constr_templ["A_eq"], [(0, 0), (n_apoly, self.nsky*self.nspec)])
+                self.b_eq_templ = constr_templ["b_eq"]
+
+        self.A_ineq_kinem = self.b_ineq_kinem = self.A_eq_kinem = self.b_eq_kinem = None
+        if constr_kinem != {}:
+            assert method == 'capfit', "Linear constraints on kinematics only possible with method='capfit'"
+            if "A_ineq" in constr_kinem:
+                self.A_ineq_kinem = np.pad(constr_kinem["A_ineq"], [(0, 0), (0, self.npars - self.ngh)])
+                self.b_ineq_kinem = constr_kinem["b_ineq"]
+            if "A_eq" in constr_kinem:
+                self.A_eq_kinem = np.pad(constr_kinem["A_eq"], [(0, 0), (0, self.npars - self.ngh)])
+                self.b_eq_kinem = constr_kinem["b_eq"]
+
+################################################################################
+
     def nonlinear_fit(self, start0, bounds0, fixed0, tied0, clean):
         """
         This function implements the procedure described in
         Section 3.4 of Cappellari M., 2017, MNRAS, 466, 798
-        http://adsabs.harvard.edu/abs/2017MNRAS.466..798C
+        http://ui.adsabs.harvard.edu/abs/2017MNRAS.466..798C
 
         """
-        ngh = self.moments.sum()
-        npars = ngh + self.mdegree*self.nspec
-
-        if self.reddening is not None:
-            npars += 1
-        if self.gas_reddening is not None:
-            npars += 1
-
         # Explicitly specify the step for the numerical derivatives
         # and force safety limits on the fitting parameters.
         #
         # Set [h3, h4, ...] and mult. polynomials to zero as initial guess
         # and constrain -0.3 < [h3, h4, ...] < 0.3
-        start = np.zeros(npars)
-        fixed = np.full(npars, False)
-        tied = np.full(npars, '', dtype=object)
-        step = np.full(npars, 0.001)
-        bounds = np.tile([-0.3, 0.3], (npars, 1))
+        start = np.zeros(self.npars)
+        fixed = np.full(self.npars, False)
+        tied = np.full(self.npars, '', dtype=object)
+        step = np.full(self.npars, 0.001)
+        bounds = np.tile([-0.3, 0.3], (self.npars, 1))
 
         p = 0
         for j, st in enumerate(start0):
@@ -1531,7 +1640,7 @@ class ppxf(object):
 
         if self.method == 'lm':
             step = 0.01  # only a scalar is supported
-            bounds = np.tile([-np.inf, np.inf], (npars, 1))   # No bounds
+            bounds = np.tile([-np.inf, np.inf], (self.npars, 1))   # No bounds
 
         # Here the actual calculation starts.
         # If required, once the minimum is found, clean the pixels deviating
@@ -1541,15 +1650,17 @@ class ppxf(object):
         for j in range(5):  # Do at most five cleaning iterations
             self.clean = False  # No cleaning during chi2 optimization
             if self.method == 'capfit':
-                res = capfit.capfit(self.linear_fit, start, ftol=self.ftol,
-                                    bounds=bounds.T, abs_step=step,
-                                    x_scale='jac', tied=tied, fixed=fixed)
+                res = capfit(self.linear_fit, start, ftol=self.ftol,
+                             bounds=bounds.T, abs_step=step,
+                             x_scale='jac', tied=tied, fixed=fixed,
+                             A_ineq=self.A_ineq_kinem, b_ineq=self.b_ineq_kinem,
+                             A_eq=self.A_eq_kinem, b_eq=self.b_eq_kinem)
                 perror = res.x_err
             else:
                 res = optimize.least_squares(self.linear_fit, start, ftol=self.ftol,
                                              bounds=bounds.T, diff_step=step,
                                              x_scale='jac', method=self.method)
-                perror = capfit.cov_err(res.jac)[1]
+                perror = cov_err(res.jac)[1]
             params = res.x
             if not clean:
                 break
@@ -1571,18 +1682,16 @@ class ppxf(object):
         """
         This function implements the procedure described in
         Sec.3.3 of Cappellari M., 2017, MNRAS, 466, 798
-        http://adsabs.harvard.edu/abs/2017MNRAS.466..798C
+        http://ui.adsabs.harvard.edu/abs/2017MNRAS.466..798C
 
         """
         # pars = [vel_1, sigma_1, h3_1, h4_1, ... # Velocities are in pixels.
         #         ...                             # For all kinematic components
         #         vel_n, sigma_n, h3_n, h4_n, ...
-        #         m1, m2, ...]                    # Multiplicative polynomials
+        #         m_1, m_2,... m_mdegree          # Multiplicative polynomials
+        #         E(B-V)_stars, E(B-V)_gas]       # Reddening
 
-        nspec = self.nspec
-        npix = self.npix
-        ngh = self.moments.sum()  # Parameters of the LOSVD only
-
+        nspec, npix, ngh = self.nspec, self.npix, self.ngh
         lvd_rfft = losvd_rfft(pars, nspec, self.moments, self.templates_rfft.shape[0],
                               self.ncomp, self.vsyst, self.velscale_ratio, self.sigma_diff)
 
@@ -1610,14 +1719,9 @@ class ppxf(object):
         else:
             gas_mpoly = None
 
-        if self.sky is None:
-            nsky = 0
-        else:
-            nsky = self.sky.shape[1]
-
         # This array is used for estimating predictions
         npoly = (self.degree + 1)*nspec  # Number of additive polynomials in fit
-        ncols = npoly + nsky*nspec + self.ntemp
+        ncols = npoly + self.nsky*nspec + self.ntemp
         c = np.zeros((npix*nspec, ncols))
 
         if self.degree >= 0:  # Fill first columns of the Design Matrix
@@ -1638,11 +1742,11 @@ class ppxf(object):
             elif mpoly is not None:
                 c[:, npoly + j] *= mpoly
 
-        if nsky > 0:
+        if self.nsky > 0:
             k = npoly + self.ntemp
-            c[: npix, k : k + nsky] = self.sky
+            c[: npix, k : k + self.nsky] = self.sky
             if nspec == 2:
-                c[npix :, k + nsky : k + 2*nsky] = self.sky  # Sky for right spectrum
+                c[npix :, k + self.nsky : k + 2*self.nsky] = self.sky  # Sky for right spectrum
 
         if self.regul > 0:
             if self.reg_ord == 1:
@@ -1652,10 +1756,6 @@ class ppxf(object):
                 nreg = np.prod(self.reg_dim)
         else:
             nreg = 0
-        if self.fraction is not None:
-            nreg += 1
-        if self.gas_any_zero:
-            nreg += 1
 
         # This array is used for the system solution
         nrows = npix*nspec + nreg
@@ -1673,17 +1773,20 @@ class ppxf(object):
         if self.regul > 0:
             regularization(a, npoly, npix, nspec, self.reg_dim, self.reg_ord, self.regul)
 
-        # Equation (30) of Cappellari (2017)
+        # See Equation (30) of Cappellari (2017)
         if self.fraction is not None:
-            k = -2 if self.gas_any_zero else -1
-            ff = a[k, npoly : npoly + self.ntemp]
-            ff[self.component == 0] = 1e9*(self.fraction - 1)
-            ff[self.component == 1] = 1e9*self.fraction
+            self.A_eq_templ = np.zeros((1, ncols))
+            ff = self.A_eq_templ[0, npoly: npoly + self.ntemp]
+            ff[self.component == 0] = self.fraction - 1
+            ff[self.component == 1] = self.fraction
+            self.b_eq_templ = np.zeros(1)
 
-        # Prevent identically-zero gas templates from perturbing the solution
+        # Constrain identically-zero gas templates to zero weights
         if self.gas_any_zero:
-            ff = a[-1, npoly : npoly + self.ntemp]
-            ff[self.gas_zero_ind] = 1e3/self.gas_scale
+            self.A_eq_templ = np.zeros((1, ncols))
+            ff = self.A_eq_templ[0, npoly: npoly + self.ntemp]
+            ff[self.gas_zero_ind] = 1
+            self.b_eq_templ = np.zeros(1)
 
         # Select the spectral region to fit and solve the over-conditioned system
         # using SVD/BVLS. Use unweighted array for estimating bestfit predictions.
@@ -1696,7 +1799,9 @@ class ppxf(object):
             else:
                 aa = a[self.goodpixels, :]
                 bb = b[self.goodpixels]
-            self.weights = bvls_solve(aa, bb, npoly)
+            self.weights = solve_linear(aa, bb, npoly,
+                                        self.A_ineq_templ, self.b_ineq_templ,
+                                        self.A_eq_templ, self.b_eq_templ)
             self.bestfit = c @ self.weights
             if self.noise.ndim > 1 and self.noise.shape[0] == self.noise.shape[1]:
                 # input NOISE is a npix*npix covariance matrix
@@ -1826,7 +1931,8 @@ class ppxf(object):
                 print(f"Stars Reddening E(B-V): {self.reddening:.3f}")
             if self.gas_reddening is not None:
                 print(f"Gas Reddening E(B-V): {self.gas_reddening:.3f}")
-            print(f"Nonzero Templates: {np.sum(self.weights > 0)} / {nw}")
+            print(f"Nonzero (>0.1%) Templates: "
+                  f"{np.sum(self.weights > 0.001*self.weights.sum())} / {nw}")
             if self.weights.size <= 20:
                 print('Templates weights:')
                 print(("{:10.3g}"*self.weights.size).format(*self.weights))
@@ -1851,7 +1957,7 @@ class ppxf(object):
             integ = abs(spectra[:, gas].sum(0))
             self.gas_flux = integ*self.weights[gas]
             design_matrix = spectra[:, gas]/self.noise[:, None]
-            self.gas_flux_error = integ*capfit.cov_err(design_matrix)[1]
+            self.gas_flux_error = integ*cov_err(design_matrix)[1]
             self.gas_bestfit = spectra[:, gas] @ self.weights[gas]
             if self.gas_any_zero:
                 self.gas_flux[self.gas_zero_template] = np.nan
@@ -1862,7 +1968,7 @@ class ppxf(object):
                 print('gas_component   name       flux       err      V     sig')
                 print('+++++++++++++++++++++++++++++++++++++++++++++++++++++++++')
                 for j, comp in enumerate(self.component[gas]):
-                    print(f"Comp: %d  %12s %10.4g  %8.2g  %6.0f  %4.0f" %
+                    print("Comp: %d  %12s %10.4g  %8.2g  %6.0f  %4.0f" %
                           (comp, self.gas_names[j], self.gas_flux[j],
                            self.gas_flux_error[j], *self.sol[comp][:2]))
                 print('---------------------------------------------------------')

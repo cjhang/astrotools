@@ -70,7 +70,7 @@ def age_metal(filename):
 #       with `norm_range`, `age_range` and `metal_range`.
 #       MC, Oxford, 23 November 2018
 
-class miles(object):
+class miles:
 
     def __init__(self, pathname, velscale, FWHM_gal, FWHM_tem=2.51,
                  age_range=None, metal_range=None, norm_range=None):

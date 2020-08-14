@@ -10,7 +10,7 @@ import re
 import numpy as np
 from matplotlib import pyplot as plt
 import spectools
-from  .utils import ppxf, miles_util, ppxf_util
+from  .utils import ppxf, miles_util, ppxf_util, capfit
 from spectools.exceptions import SpecToolsError
 
 class Spectrum(object):
@@ -18,7 +18,7 @@ class Spectrum(object):
     """
 
     def __init__(self, wave=None, z=None, flux=None, noise=None, 
-                 instru_sigma=None, redcorr=None):
+                 instru_sigma=None, redcorr=None, flag=None):
         """
         Parameters
         ----------
@@ -58,10 +58,11 @@ class Spectrum(object):
         ppxf_fit(mode='kinematics')
             Full spectrum fitting based on the pPXF code
         """
-        self.wave = wave
+        self.wave = np.asarray(wave)
         self.z = z
-        self.flux = flux
-        self.noise = noise
+        self.wave_rest = self.wave/(1+z)
+        self.flux = np.asarray(flux)
+        self.noise = np.asarray(noise)
         self.fitted = False
         #self.dx = None
         self.instru_sigma = instru_sigma
@@ -73,6 +74,15 @@ class Spectrum(object):
         self.emlines = None
         self.emline_base = None
         self.residual = None
+        self.flag = flag
+        flux_invalid = np.ma.masked_invalid(self.flux)
+        noise_invalid = np.ma.masked_invalid(self.noise)
+        if flag is not None:
+            self.flag = flag | flux_invalid.mask | noise_invalid.mask
+        else:
+            self.flag = flux_invalid.mask | noise_invalid.mask
+        self.flux = flux_invalid.filled(0.0)
+        self.noise = noise_invalid.filled(1e-4)
         #self.sigma = self.psf/2.355
 
     def read(self, filename):
@@ -83,9 +93,10 @@ class Spectrum(object):
         '''
         pass
 
-    def plot(self, waveRange=None, restWave=False, showFlux=True, ax=None,
+    def plot(self, waveRange=None,
+             showFlux=True, showNoise=True, ax=None,
              showModel=False, showEmlines=False, showContinuum=False,
-             showResidual=False):
+             showResidual=False, mask=None):
         """Visualize the spectrum with original data and fitted data
 
         Parameters
@@ -106,47 +117,56 @@ class Spectrum(object):
             show best fitting stellar continuum
         showResidual : bool
             residual = flux - model
+        mask : ndarray
+            the good pixels included
         """
         if not ax:
-            fig = plt.figure()
+            fig = plt.figure(figsize=(6,5))
             ax = fig.add_subplot(111)
-        if restWave and self.z:
-            wave = self.wave / (1 + self.z)
-            ax.set_xlabel("wavelength (rest frame)")
-        else:
-            wave = self.wave
-            ax.set_xlabel("wavelength")
         if showFlux:
-            ax.step(wave, self.flux, label='flux', color='k', lw=0.5)
+            ax.step(self.wave, self.flux, label='flux', color='C0', lw=1)
+        if showNoise and self.noise is not None:
+            ax.fill_between(self.wave, self.flux-self.noise, self.flux+self.noise, color='red', alpha=0.4, step='pre')
+        if self.flag is not None:
+            masked_region = np.where(self.flag)
+            for w in masked_region[0]:
+                ax.axvspan(self.wave[w-1], self.wave[w], facecolor='lightgray')
+
+
         if self.fitted:
             if showModel:
-                ax.plot(self.wave_fit, self.model, label='model', color='r', lw=1)
+                ax.plot(self.wave_fit, self.model, label='model', color='C1', lw=1)
             if showEmlines:
-                ax.plot(self.wave_fit, self.emlines, label='emlines', color='b', lw=1)
+                ax.plot(self.wave_fit, self.emlines, label='emlines', color='C2', lw=1)
             if showContinuum:
                 ax.plot(self.wave_fit, self.stellarcontinuum, label='stellar continuum',
-                        color='g', lw=1)
+                        color='C3', lw=1)
             if showResidual:
-                ax.step(self.wavefit, self.residual-0.5, label='residual', 
+                ax.step(self.wave_fit, self.residual-0.5, label='residual', 
                         where='mid', color='0.5', lw=0.5)
         if waveRange:
             wave_window = (wave > waveRange[0]) & (wave < waveRange[1]) 
             ax.set_xlim(waveRange)
             ax.set_ylim(self.flux[wave_window].min(), 
                         self.flux[wave_window].max())
+        ax.set_xlabel('restframe wavelength ($\AA$)')
+        # ax.set_ylabel('flux ($10^{-20} erg\,s^{-1}\,cm^2\,\AA$)')
         ax.set_ylabel('Flux')
         ax.legend()
 
         if not ax:
             return fig
 
-    def ppxf_fit(self, tie_balmer=False, limit_doublets=False, quiet=False, 
+    def ppxf_fit(self, wave_window=None, 
+                 tie_balmer=False, limit_doublets=False, quiet=False, 
                  mode='population', broad_balmer=None, broad_O3=None, 
-                 fewer_lines=False):
+                 fewer_lines=False, **kwargs):
         """fitting the spectrum using ppxf
         
         Parameters
         ----------
+        wave_window : array_like
+            Wavelength window to be fitted, usually determined by the template
         tie_balmer : bool
             Fix the flux ratio and kinematics of Balmer lines
         quiet : bool
@@ -184,206 +204,94 @@ class Spectrum(object):
             *  
 
         """
-        # Only use the wavelength range in common between galaxy and stellar library.
-        wave_mask = (self.wave > 3540*(1+self.z)) & (self.wave < 7400*(1+self.z))
-        self.flux_scale = max(np.ma.median(self.flux[wave_mask]), 1.)
-        flux = self.flux[wave_mask]/self.flux_scale
-        if self.redcorr is not None:
-            flux = flux * self.redcorr[wave_mask]
-        wave = self.wave[wave_mask]
-        noise = self.noise[wave_mask]/self.flux_scale
-        if not np.all((noise > 0) & np.isfinite(noise)) and not quiet:
-            print('noise:', noise)
-            print('flux_scale:', self.flux_scale)
 
-        # noise = np.full_like(flux, 0.0166)
-        c = 299792.485
-        # define the dispersion of one pixel
-        velscale = c*np.log(wave[1]/wave[0]) 
+        # Only use the wavelength range in common between galaxy and stellar library.
+        fit_window = wave_window #& (~self.flag)
+
+        wave = self.wave_rest[fit_window]
+        flux_scale = max(np.ma.median(np.ma.masked_invalid(self.flux[fit_window])),  1.)
+        flux = self.flux[fit_window]/flux_scale
+        if self.redcorr is not None:
+            flux = flux * self.redcorr[fit_window]
+        noise = self.noise[fit_window]/flux_scale
+
+        # logrebin the spectrum
+        flux_rebin, logLam1, velscale = ppxf_util.log_rebin([wave[0], wave[-1]], flux, oversample=1, flux=False)
+        wave_rebin = np.exp(logLam1)
+        noise_rebin2, logLam1, velscale = ppxf_util.log_rebin([wave[0], wave[-1]], noise**2)
+        noise_rebin =  np.sqrt(noise_rebin2)
+
+        self.wave_rebin = wave_rebin
+        self.flux_rebin = flux_rebin
+
         FWHM_gal = self.instru_sigma
         
-        # load the templates
+        # set the stellar templates
         package_path = os.path.dirname(os.path.realpath(spectools.__file__))
         miles = miles_util.miles(package_path + '/data/miles_models/Mun1.30*.fits', 
                                  velscale, FWHM_gal)
         reg_dim = miles.templates.shape[1:]
         stars_templates = miles.templates.reshape(miles.templates.shape[0], -1)
         
-        # before fitting
-        dv = c*(miles.log_lam_temp[0] - np.log(wave[0]))
-        vel = c*np.log(1+self.z)
-        start = [vel, 180.]
-        
-        if mode == 'population':
-            regul_err = 0.013 # Desired regularization error
-            lam_range_gal = np.array([np.min(wave), np.max(wave)])/(1+self.z)
-            
-            gas_templates, gas_names, line_wave = ppxf_util.emission_lines(
-                    miles.log_lam_temp, lam_range_gal, FWHM_gal,
-                    tie_balmer=tie_balmer, limit_doublets=limit_doublets, 
-                    broad_balmer=broad_balmer, broad_O3=broad_O3,
-                    fewer_lines=fewer_lines)
-            
-            templates = np.column_stack([stars_templates, gas_templates])
-            n_temps = stars_templates.shape[1]
-            
-            # Balmer lines start with contain letter
-            n_balmer = np.sum([re.match('^[a-zA-Z]+', a) is not None for a in gas_names]) 
-            
-            # forbidden lines contain "["
-            # n_forbidden = np.sum(["[" in a for a in gas_names])
-            n_forbidden = np.sum([re.match('^\[[a-zA-Z]+', a) is not None 
-                                    for a in gas_names])
-            
-            component = [0]*n_temps + [1]*n_balmer + [2]*n_forbidden 
-            component_n = 3
-            
-            # for stars + balmer + forbidden lines
-            moments = [4, 2, 2]
-            start = [start, start, start]
-            inf = 1e8
-            bounds = [[[-inf, inf], [0, 500], [-inf, inf], [-inf, inf]], 
-                      [[-inf, inf], [0, 500]], 
-                      [[-inf, inf], [0, 500]]]
-            
-            if broad_balmer is not None:
-                moments.append(2)
-                start.append([vel, broad_balmer])
-                # balmer up to 10000
-                bounds.append([[-inf, inf], [broad_balmer, 10000]])
-                # broad lines contain "{*}"
-                n_balmer_broad = np.sum([re.match('^_[a-zA-Z]+', a) is not None 
-                                            for a in gas_names]) 
-                component = component + [component_n]*n_balmer_broad
-                component_n = component_n + 1
-            
-            if broad_O3 is not None:
-                moments.append(2)
-                start.append([vel, broad_O3])
-                bounds.append([[-inf, inf], [broad_O3, 2000]])
-                n_forbidden_broad = np.sum([re.match('^_\[[a-zA-Z]+', a) is not None 
-                                              for a in gas_names])
-                component = component + [component_n]*n_forbidden_broad
-            
-            gas_component = np.array(component) > 0
-            gas_reddening = 0 if tie_balmer else None
-            # start fitting
-            mask = None
-            pp = ppxf.ppxf(templates, flux, noise, velscale, start,
-                      plot=False, moments=moments, degree=12, mdegree=0, 
-                      vsyst=dv, lam=wave, clean=False, regul=1/regul_err, 
-                      reg_dim=reg_dim, mask=mask, component=component, 
-                      quiet=quiet, gas_component=gas_component, 
-                      gas_names=gas_names, gas_reddening=gas_reddening)
-       
-        elif mode == "kinematics":
-            templates = stars_templates
-            lamRange_temp = (np.exp(miles.log_lam_temp[0]), 
-                            np.exp(miles.log_lam_temp[-1]))
-            flux = np.ma.array(flux)
-            bad_mask = np.where((flux.mask == True) 
-                                & (flux > 10*np.ma.median(flux)))[0]
-            goodpixels = ppxf_util.determine_goodpixels(
-                            np.log(wave), lamRange_temp, self.z, 
-                            broad_balmer=broad_balmer,
-                            broad_O3=broad_O3)
-            # remove the masked data from the goodpixels
-            for i in bad_mask:
-                try:
-                    goodpixels.remove(i)
-                except:
-                    continue
 
-            flux = flux.filled(0)
-            pp = ppxf.ppxf(templates, flux, noise, velscale, start,
-                    goodpixels=goodpixels, plot=False, moments=4, 
-                    degree=12, vsyst=dv, clean=False, lam=wave, quiet=quiet)
-            
-            # store the fitting results
-            self.fitted = True
-            self.stellarcontinuum = np.full_like(self.flux, 0)
-            self.stellarcontinuum[wave_mask] = pp.bestfit * self.flux_scale
-            self.wave_fit = pp.lam
-            self.window_fit = ((self.wave <= self.wave_fit.max()) 
-                                & (self.wave >= self.wave_fit.min()))
+        # set the emission line templates
+        lam_range_gal = np.array([np.min(wave), np.max(wave)])/(1 + self.z)
+        gas_templates, gas_names, line_wave = ppxf_util.emission_lines(
+                                                miles.log_lam_temp, lam_range_gal, FWHM_gal,
+                                                tie_balmer=tie_balmer, limit_doublets=limit_doublets)
+
+
+
+        templates = np.column_stack([stars_templates, gas_templates])
         
-        elif mode == 'emline':
-            flux = (self.flux[wave_mask] - self.stellarcontinuum[wave_mask])
-            if self.flux_scale:
-                flux = flux / self.flux_scale
-            if self.redcorr:
-                flux = flux * self.redcorr
-            lam_range_gal = np.array([np.min(wave), np.max(wave)])/(1+self.z)
-            gas_templates, gas_names, line_wave = ppxf_util.emission_lines(
-                    miles.log_lam_temp, lam_range_gal, FWHM_gal, fewer_lines=fewer_lines, 
-                    tie_balmer=tie_balmer, limit_doublets=limit_doublets, 
-                    broad_balmer=broad_balmer, broad_O3=broad_O3, quiet=quiet)
-            
-            # Balmer lines start with contain letter
-            n_balmer = np.sum([re.match('^[a-zA-Z]+', a) is not None for a in gas_names]) 
-            
-            # forbidden lines contain "["
-            # n_forbidden = np.sum(["[" in a for a in gas_names])
-            n_forbidden = np.sum([re.match('^\[[a-zA-Z]+', a) is not None 
-                                    for a in gas_names])
-            component = [0]*n_balmer + [1]*n_forbidden 
-            component_n = 2
-            
-            # for stars + balmer + forbidden lines
-            moments = [2, 2]
-            start = [start, start]
-            inf = 1e6
-            bounds = [[[-inf, inf], [0, 600]], 
-                      [[-inf, inf], [0, 600]]]
-            if broad_balmer is not None:
-                moments.append(2)
-                start.append([vel, broad_balmer])
-                # balmer up to 10000
-                bounds.append([[-inf, inf], [broad_balmer, 10000]])
-                # broad lines contain "_["
-                n_balmer_broad = np.sum([re.match('^_[a-zA-Z]+', a) is not None 
-                                            for a in gas_names]) 
-                component = component + [component_n]*n_balmer_broad
-                component_n = component_n + 1
-            
-            if broad_O3 is not None:
-                moments.append(2)
-                start.append([vel, broad_O3])
-                bounds.append([[-inf, inf], [broad_O3, 2000]])
-                n_forbidden_broad = np.sum([re.match('^_\[[a-zA-Z]+', a) is not None 
-                                              for a in gas_names])
-                component = component + [component_n]*n_forbidden_broad
-            gas_component = np.array(component) >= 0
-            gas_reddening = 0 if tie_balmer else None
-            
-            # start fitting
-            mask = None
-            pp = ppxf.ppxf(gas_templates, flux, noise, velscale, start, bounds=bounds,
-                      plot=False, moments=moments, degree=-1, mdegree=0, 
-                      vsyst=dv, lam=wave, clean=False, mask=mask, component=component, 
-                      quiet=quiet, gas_component=gas_component, 
-                      gas_names=gas_names, gas_reddening=gas_reddening)
-        else:
-            raise SpecToolsError('Invalid mode for spectrum fitting!')
+
+        # before fitting
+        c = 299792.458
+        dv = c*(miles.log_lam_temp[0] - np.log(wave[0]))
+        # vel = c*np.log(1+self.z)
+        start = [0, 180.]
+
+        n_temps = stars_templates.shape[1]
+        n_forbidden = np.sum(["[" in a for a in gas_names])  # forbidden lines contain "[*]"
+        n_balmer = len(gas_names) - n_forbidden
+
+        component = [0]*n_temps + [1]*n_balmer + [2]*n_forbidden
+        gas_component = np.array(component) > 0  # gas_component=True for gas templates
+
+        moments = [4, 2, 2]
+
+        # Adopt the same starting value for the stars and the two gas components
+        start = [start, start, start]
         
-        # wrap relevant value into returned class 
-        pp.flux_scale = self.flux_scale
-        pp.z = self.z
-        pp.mode = mode
-        # pp.var_num = len(pp.lam)
-        # pp.para_num = len(np.concatenate(start))
-        pp.chi2_orig = pp.chi2 * (pp.vars_num - pp.params_num)
-        
-        # seperating different components from the model
-        if False:#len(pp.gas_component) > 0:
-            dwave = np.roll(pp.lam, -1) - pp.lam
-            dwave[-1] = dwave[-2] # fix the bad point introduced by roll
-            # dwave = np.ones_like(pp.lam)
-            # TODO: combined flux_scale into weights
-            pp.gas_flux = dwave @ pp.matrix * pp.weights * pp.flux_scale
-            pp.gas_flux_err = (dwave @ pp.matrix 
-                    * capfit.cov_err(pp.matrix / pp.noise[:, None])[1] * pp.flux_scale)
-            pp.gas_lines = dict(zip(pp.gas_names, pp.gas_flux))
-            pp.gas_lines_err = dict(zip(pp.gas_names, pp.gas_flux_error))
+        mask = ~(self.flag[fit_window])
+        muse_mask = ~((np.exp(logLam1) < 6020/(1+self.z)) & (np.exp(logLam1) > 5790/(1+self.z)))
+
+        pp = ppxf.ppxf(templates, flux_rebin, noise_rebin, velscale, start,
+              moments=moments, degree=-1, mdegree=10, vsyst=dv,
+              lam=wave_rebin, clean=False, regul=0, reg_dim=reg_dim,
+              component=component, gas_component=gas_component,
+              gas_names=gas_names, gas_reddening=True,
+              mask=mask, quiet=quiet, **kwargs)
+
+        pp.flux_scale = flux_scale
+
+        dwave = np.roll(pp.lam, -1) - pp.lam
+        dwave[-1] = dwave[-2] # fix the bad point introduced by roll
+        # self.model = dwave @ pp.matrix * pp.weights * flux_scale
+        # self.model_err = flux_err = dwave @ pp.matrix * capfit.cov_err(pp.matrix / pp.noise[:, None])[1] * flux_scale
+        self.wave_fit = pp.lam
+        self.model = pp.bestfit * flux_scale
+        self.fitted = True
+    
+        if not quiet:
+            print('Desired Delta Chi^2: %.4g' % np.sqrt(2*flux_rebin.size))
+            print('Current Delta Chi^2: %.4g' % ((pp.chi2 - 1)*flux_rebin.size))
+
+            weights = pp.weights[~gas_component]  # Exclude weights of the gas templates
+            weights = weights.reshape(reg_dim)/weights.sum()  # Normalized
+
+            miles.mean_age_metal(weights)
+            # miles.mass_to_light(weights, band="r")
 
         return pp
+

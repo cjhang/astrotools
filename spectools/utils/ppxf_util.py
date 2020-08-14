@@ -1,7 +1,7 @@
 """
 ###############################################################################
 
-    Copyright (C) 2001-2018, Michele Cappellari
+    Copyright (C) 2001-2019, Michele Cappellari
     E-mail: michele.cappellari_at_physics.ox.ac.uk
 
     This software is provided as is without any warranty whatsoever.
@@ -25,10 +25,7 @@
 
 """
 
-from __future__ import print_function
-
 import numpy as np
-from scipy import fftpack
 import matplotlib.pyplot as plt
 
 from .ppxf import losvd_rfft, rebin
@@ -65,7 +62,7 @@ def log_rebin(lamRange, spec, oversample=1, velscale=None, flux=False):
     Basically the photons in the spectrum are simply redistributed according
     to a new grid of pixels, with non-uniform size in the spectral direction.
     
-    When the flux keyword is set, this program performs an exact integration 
+    When the `flux` keyword is set, this program performs an exact integration 
     of the original spectrum, assumed to be a step function within the 
     linearly-spaced pixels, onto the new logarithmically-spaced pixels. 
     The output was tested to agree with the analytic solution.
@@ -145,9 +142,10 @@ def log_rebin(lamRange, spec, oversample=1, velscale=None, flux=False):
 #   V2.0.1: Updated line list. MC, Oxford, 8 January 2014
 #   V2.0.2: Use redshift instead of velocity as input for higher accuracy at large z.
 #       MC, Lexington, 31 March 2015
+#   V2.0.3: Includes `width` keyword after suggestion by George Privon (Univ. Florida).
+#       MC, Oxford, 2 July 2018
 
-def determine_goodpixels(logLam, lamRangeTemp, z, broad_balmer=False, 
-                         broad_O3=False):
+def determine_goodpixels(logLam, lamRangeTemp, z, width=800):
     """
     Generates a list of goodpixels to mask a given set of gas emission
     lines. This is meant to be used as input for PPXF.
@@ -162,29 +160,13 @@ def determine_goodpixels(logLam, lamRangeTemp, z, broad_balmer=False,
     """
 #                     -----[OII]-----    Hdelta   Hgamma   Hbeta   -----[OIII]-----   [OI]    -----[NII]-----   Halpha   -----[SII]-----
     lines = np.array([3726.03, 3728.82, 4101.76, 4340.47, 4861.33, 4958.92, 5006.84, 6300.30, 6548.03, 6583.41, 6562.80, 6716.47, 6730.85])
-    dv = np.full_like(lines, 800)  # width/2 of masked gas emission region in km/s
+    dv = np.full_like(lines, width)  # width/2 of masked gas emission region in km/s
     c = 299792.458 # speed of light in km/s
 
     flag = False
     for line, dvj in zip(lines, dv):
         flag |= (np.exp(logLam) > line*(1 + z)*(1 - dvj/c)) \
               & (np.exp(logLam) < line*(1 + z)*(1 + dvj/c))
-
-    if broad_balmer:
-        print("Using broad Balmer")
-        lines = np.array([4861.33, 6562.80])
-        dv = np.full_like(lines, 4000)
-        for line, dvj in zip(lines, dv):
-            flag |= (np.exp(logLam) > line*(1 + z)*(1 - dvj/c)) \
-                  & (np.exp(logLam) < line*(1 + z)*(1 + dvj/c))
-    
-    if broad_O3:
-        print('Using broad OIII')
-        lines = np.array([4958.92, 5006.84])
-        dv = np.full_like(lines, 4000)
-        for line, dvj in zip(lines, dv):
-            flag |= (np.exp(logLam) > line*(1 + z)*(1 - dvj/c)) \
-                  & (np.exp(logLam) < line*(1 + z)*(1 + dvj/c))
 
     flag |= np.exp(logLam) > lamRangeTemp[1]*(1 + z)*(1 - 900/c)   # Mask edges of
     flag |= np.exp(logLam) < lamRangeTemp[0]*(1 + z)*(1 + 900/c)   # stellar library
@@ -197,7 +179,7 @@ def _wave_convert(lam):
     """
     Convert between vacuum and air wavelengths using
     equation (1) of Ciddor 1996, Applied Optics 35, 1566
-        http://dx.doi.org/10.1364/AO.35.001566
+        http://doi.org/10.1364/AO.35.001566
 
     :param lam - Wavelength in Angstroms
     :return: conversion factor
@@ -244,6 +226,7 @@ def air_to_vac(lam_air):
 #       convolution within pPXF at any sigma, including sigma=0.
 #       Introduced `pixel` keyword for optional pixel convolution.
 #       MC, Oxford, 26 May 2017
+#   V2.0.1: Removed Scipy next_fast_len usage. MC, Oxford, 25 January 2019
 
 def gaussian(logLam_temp, line_wave, FWHM_gal, pixel=True):
     """
@@ -287,7 +270,7 @@ def gaussian(logLam_temp, line_wave, FWHM_gal, pixel=True):
         FWHM_gal = FWHM_gal(line_wave)
 
     n = logLam_temp.size
-    npad = fftpack.next_fast_len(n)
+    npad = 2**int(np.ceil(np.log2(n)))
     nl = npad//2 + 1  # Expected length of rfft
 
     dx = (logLam_temp[-1] - logLam_temp[0])/(n - 1)
@@ -333,9 +316,8 @@ def gaussian(logLam_temp, line_wave, FWHM_gal, pixel=True):
 #       weights for the Balmer series with tie_balmer=True. Many thanks to
 #       Kyle Wesfall (Santa Cruz) for reporting this bug. MC, Oxford, 10 April 2018
 
-def emission_lines(logLam_temp, lamRange_gal, FWHM_gal, pixel=True, quiet=False,
-                   tie_balmer=False, limit_doublets=False, vacuum=False, 
-                   fewer_lines=False, broad_balmer=None, broad_O3=None):
+def emission_lines(logLam_temp, lamRange_gal, FWHM_gal, pixel=True, quiet=True,
+                   tie_balmer=False, limit_doublets=False, vacuum=False):
     """
     Generates an array of Gaussian emission lines to be used as gas templates in PPXF.
 
@@ -358,66 +340,93 @@ def emission_lines(logLam_temp, lamRange_gal, FWHM_gal, pixel=True, quiet=False,
 
     The Balmet Series can be fixed to the theoretically predicted decrement.
 
-    :param logLam_temp: is the natural log of the wavelength of the templates in
-        Angstrom. logLam_temp should be the same as that of the stellar templates.
-    :param lamRange_gal: is the estimated rest-frame fitted wavelength range
-        Typically lamRange_gal = np.array([np.min(wave), np.max(wave)])/(1 + z),
+    Input Parameters
+    ----------------
+
+    logLam_temp: array_like
+        is the natural log of the wavelength of the templates in Angstrom.
+        ``logLam_temp`` should be the same as that of the stellar templates.
+    lamRange_gal: array_like
+        is the estimated rest-frame fitted wavelength range. Typically::
+
+            lamRange_gal = np.array([np.min(wave), np.max(wave)])/(1 + z),
+
         where wave is the observed wavelength of the fitted galaxy pixels and
         z is an initial rough estimate of the galaxy redshift.
-    :param FWHM_gal: is the instrumantal FWHM of the galaxy spectrum under study
-        in Angstrom. One can pass either a scalar or the name "func" of a function
-        func(wave) which returns the FWHM for a given vector of input wavelengths.
-    :param pixel: Set this to False to ignore pixels integration (default True).
-    :param tie_balmer: Set this to True to tie the Balmer lines according to
-        a theoretical decrement (case B recombination T=1e4 K, n=100 cm^-3).
-      - IMPORTANT: The relative fluxes of the Balmer components assumes the 
-        input spectrum has units proportional to erg/(cm**2 s A).
-    :param limit_doublets: Set this to True to limit the rato of the
-        [OII] and [SII] doublets to the ranges allowed by atomic physics.
-      - IMPORTANT: when using this keyword, the two output fluxes (flux_1 and
+    FWHM_gal: float or func
+        is the instrumantal FWHM of the galaxy spectrum under study in Angstrom.
+        One can pass either a scalar or the name "func" of a function
+        ``func(wave)`` which returns the FWHM for a given vector of input
+        wavelengths.
+    pixel: bool, optional
+        Set this to ``False`` to ignore pixels integration (default ``True``).
+    tie_balmer: bool, optional
+        Set this to ``True`` to tie the Balmer lines according to a theoretical
+        decrement (case B recombination T=1e4 K, n=100 cm^-3).
+
+        IMPORTANT: The relative fluxes of the Balmer components assumes the
+        input spectrum has units proportional to ``erg/(cm**2 s A)``.
+    limit_doublets: bool, optional
+        Set this to True to limit the rato of the [OII] and [SII] doublets to
+        the ranges allowed by atomic physics.
+
+        IMPORTANT: when using this keyword, the two output fluxes (flux_1 and
         flux_2) provided by pPXF for the two lines of the doublet, do *not*
         represent the actual fluxes of the two lines, but the fluxes of the two
         input *doublets* of which the fit is a linear combination.
         If the two doublets templates have line ratios rat_1 and rat_2, and
         pPXF prints fluxes flux_1 and flux_2, the actual ratio and flux of the
-        fitted doublet will be
+        fitted doublet will be::
 
             flux_total = flux_1 + flux_1
             ratio_fit = (rat_1*flux_1 + rat_2*flux_2)/flux_total
 
-      - EXAMPLE: For the [SII] doublet, the adopted ratios for the templates are
+        EXAMPLE: For the [SII] doublet, the adopted ratios for the templates are::
 
             ratio_d1 = flux([SII]6716/6731) = 0.44
             ratio_d2 = flux([SII]6716/6731) = 1.43.
 
-        If pPXF prints (and returns in pp.gas_flux)
+        When pPXF prints (and returns in pp.gas_flux)::
 
             flux([SII]6731_d1) = flux_1
             flux([SII]6731_d2) = flux_2
 
-        the total flux and true lines ratio of the [SII] doublet are
+        the total flux and true lines ratio of the [SII] doublet are::
 
             flux_total = flux_1 + flux_2
             ratio_fit([SII]6716/6731) = (0.44*flux_1 + 1.43*flux_2)/flux_total
 
-      - Similarly, for [OII], the adopted ratios for the templates are
+        Similarly, for [OII], the adopted ratios for the templates are::
 
             ratio_d1 = flux([OII]3729/3726) = 0.28
             ratio_d2 = flux([OII]3729/3726) = 1.47.
 
-        If pPXF prints (and returns in pp.gas_flux)
+        When pPXF prints (and returns in pp.gas_flux)::
 
             flux([OII]3726_d1) = flux_1
             flux([OII]3726_d2) = flux_2
 
-        the total flux and true lines ratio of the [OII] doublet are
+        the total flux and true lines ratio of the [OII] doublet are::
 
             flux_total = flux_1 + flux_2
             ratio_fit([OII]3729/3726) = (0.28*flux_1 + 1.47*flux_2)/flux_total
 
-    :param vacuum: set to True to assume wavelengths are given in vacuum.
+    vacuum:  bool, optional
+        set to ``True`` to assume wavelengths are given in vacuum.
         By default the wavelengths are assumed to be measured in air.
-    :return: emission_lines, line_names, line_wave
+
+    Output Parameters
+    -----------------
+
+    emission_lines: ndarray
+        Array of dimensions ``[logLam_temp.size, line_wave.size]`` containing
+        the gas templates, one per array column.
+
+    line_names: ndarray
+        Array of strings with the name of each line, or group of lines'
+
+    line_wave: ndarray
+        Central wavelength of the lines, one for each gas template'
 
     """
     if tie_balmer:
@@ -431,22 +440,19 @@ def emission_lines(logLam_temp, lamRange_gal, FWHM_gal, pixel=True, quiet=False,
         gauss = gaussian(logLam_temp, wave, FWHM_gal, pixel)
         ratios = np.array([0.0530, 0.0731, 0.105, 0.159, 0.259, 0.468, 1, 2.86])
         ratios *= wave[-2]/wave  # Account for varying pixel size in Angstrom
-        emission_lines = gauss.dot(ratios)
+        emission_lines = gauss @ ratios
         line_names = ['Balmer']
-        line_wave = np.mean(wave)
+        w = (wave > lamRange_gal[0]) & (wave < lamRange_gal[1])
+        line_wave = np.mean(wave[w]) if np.any(w) else np.mean(wave)
 
     else:
 
         # Use fewer lines here, as the weak ones are difficult to measure
         # Balmer:    Hdelta   Hgamma    Hbeta   Halpha
-        if fewer_lines:
-            line_wave = [4861.33, 6562.80]  # air wavelengths
-            line_names = ['Hbeta', 'Halpha']
-        else:
-            line_wave = [3797.90, 3835.39, 3889.05, 3970.07, 4101.76, 4340.47, 4861.33, 6562.80]  # air wavelengths
-            line_names = ['H10', 'H9', 'H8', 'Hepsilon', 'Hdelta', 'Hgamma', 'Hbeta', 'Halpha']
+        line_wave = [4101.76, 4340.47, 4861.33, 6562.80]  # air wavelengths
         if vacuum:
             line_wave = air_to_vac(line_wave)
+        line_names = ['Hdelta', 'Hgamma', 'Hbeta', 'Halpha']
         emission_lines = gaussian(logLam_temp, line_wave, FWHM_gal, pixel)
 
 
@@ -463,7 +469,7 @@ def emission_lines(logLam_temp, lamRange_gal, FWHM_gal, pixel=True, quiet=False,
             wave = air_to_vac(wave)
         names = ['[OII]3726_d1', '[OII]3726_d2']
         gauss = gaussian(logLam_temp, wave, FWHM_gal, pixel)
-        doublets = gauss.dot([[1, 1], [0.28, 1.47]])  # produces *two* doublets
+        doublets = gauss @ [[1, 1], [0.28, 1.47]]  # produces *two* doublets
         emission_lines = np.column_stack([emission_lines, doublets])
         line_names = np.append(line_names, names)
         line_wave = np.append(line_wave, wave)
@@ -479,7 +485,7 @@ def emission_lines(logLam_temp, lamRange_gal, FWHM_gal, pixel=True, quiet=False,
             wave = air_to_vac(wave)
         names = ['[SII]6731_d1', '[SII]6731_d2']
         gauss = gaussian(logLam_temp, wave, FWHM_gal, pixel)
-        doublets = gauss.dot([[0.44, 1.43], [1, 1]])  # produces *two* doublets
+        doublets = gauss @ [[0.44, 1.43], [1, 1]]  # produces *two* doublets
         emission_lines = np.column_stack([emission_lines, doublets])
         line_names = np.append(line_names, names)
         line_wave = np.append(line_wave, wave)
@@ -500,6 +506,14 @@ def emission_lines(logLam_temp, lamRange_gal, FWHM_gal, pixel=True, quiet=False,
 
     # To keep the flux ratio of a doublet fixed, we place the two lines in a single template
     #       -----[OIII]-----
+    #wave = [4958.92, 5006.84]    # air wavelengths
+    #if vacuum:
+    #    wave = air_to_vac(wave)
+    #doublet = gaussian(logLam_temp, wave, FWHM_gal, pixel) @ [0.33, 1]
+    #emission_lines = np.column_stack([emission_lines, doublet])
+    #line_names = np.append(line_names, '[OIII]5007_d')  # single template for this doublet
+    #line_wave = np.append(line_wave, wave[1])
+    
     wave = [4958.92, 5006.84]    # air wavelengths
     if vacuum:
         wave = air_to_vac(wave)
@@ -518,18 +532,21 @@ def emission_lines(logLam_temp, lamRange_gal, FWHM_gal, pixel=True, quiet=False,
     wave = [6300.30, 6363.67]    # air wavelengths
     if vacuum:
         wave = air_to_vac(wave)
-    #doublet = gaussian(logLam_temp, wave, FWHM_gal, pixel).dot([1, 0.33])
-    #emission_lines = np.column_stack([emission_lines, doublet])
-    #line_names = np.append(line_names, '[OI]6300_d')  # single template for this doublet
-    #line_wave = np.append(line_wave, wave[0])
-    names = ['[OI]6302', '[OI]6365']
-    gauss = gaussian(logLam_temp, wave, FWHM_gal, pixel)
-    emission_lines = np.column_stack([emission_lines, gauss])
-    line_names = np.append(line_names, names)
-    line_wave = np.append(line_wave, wave)
+    doublet = gaussian(logLam_temp, wave, FWHM_gal, pixel) @ [1, 0.33]
+    emission_lines = np.column_stack([emission_lines, doublet])
+    line_names = np.append(line_names, '[OI]6300_d')  # single template for this doublet
+    line_wave = np.append(line_wave, wave[0])
 
     # To keep the flux ratio of a doublet fixed, we place the two lines in a single template
     #       -----[NII]-----
+    #wave = [6548.03, 6583.41]    # air wavelengths
+    #if vacuum:
+    #    wave = air_to_vac(wave)
+    #doublet = gaussian(logLam_temp, wave, FWHM_gal, pixel) @ [0.33, 1]
+    #emission_lines = np.column_stack([emission_lines, doublet])
+    #line_names = np.append(line_names, '[NII]6583_d')  # single template for this doublet
+    #line_wave = np.append(line_wave, wave[1])
+    
     wave = [6548.03, 6583.41]    # air wavelengths
     if vacuum:
         wave = air_to_vac(wave)
@@ -542,57 +559,17 @@ def emission_lines(logLam_temp, lamRange_gal, FWHM_gal, pixel=True, quiet=False,
     line_names = np.append(line_names, names)
     line_wave = np.append(line_wave, wave)
 
-
-    # -------------------------------------------------------------
-    # Additional lines
-    if not fewer_lines:
-        wave = [3868.91, 4363.21, 5754.64]  # air wavelengths
-        if vacuum:
-            wave = air_to_vac(wave)
-        names = ['NeIII', '[OIII]4364', '[NII]5756']
-        gauss = gaussian(logLam_temp, wave, FWHM_gal, pixel)
-        emission_lines = np.column_stack([emission_lines, gauss])
-        line_names = np.append(line_names, names)
-        line_wave = np.append(line_wave, wave)
-
-    
-    # The broad lines
-    if broad_balmer and not fewer_lines:
-        # broad Hb and Ha, BLR
-        wave = [4861.33, 6562.80]  # air wavelengths
-        if vacuum:
-            wave = air_to_vac(wave)
-        names = ['_Hbeta', '_Halpha']
-        gauss = gaussian(logLam_temp, wave, FWHM_gal, pixel)
-        emission_lines = np.column_stack([emission_lines, gauss])
-        line_names = np.append(line_names, names)
-        line_wave = np.append(line_wave, wave)
-    if broad_O3:
-        # Broad [O III] trace the outflow
-        wave = [4958.92, 5006.84]    # air wavelengths
-        if vacuum:
-            wave = air_to_vac(wave)
-        # doublet = gaussian(logLam_temp, wave, FWHM_gal, pixel) @ [0.33, 1]
-        # emission_lines = np.column_stack([emission_lines, doublet])
-        # line_names = np.append(line_names, '{[OIII]5007_d}')  # single template for this doublet
-        # line_wave = np.append(line_wave, wave[1])
-        names = ['_[OIII]4960', '_[OIII]5008']
-        gauss = gaussian(logLam_temp, wave, FWHM_gal, pixel)
-        emission_lines = np.column_stack([emission_lines, gauss])
-        line_names = np.append(line_names, names)
-        line_wave = np.append(line_wave, wave)
-
-    #---------------------------------------------------------------------
     # Only include lines falling within the estimated fitted wavelength range.
-    # This is important to avoid instabilities in the pPXF system solution
     #
     w = (line_wave > lamRange_gal[0]) & (line_wave < lamRange_gal[1])
     emission_lines = emission_lines[:, w]
     line_names = line_names[w]
     line_wave = line_wave[w]
+    
     if not quiet:
         print('Emission lines included in gas templates:')
         print(line_names)
+
     return emission_lines, line_names, line_wave
 
 ###############################################################################
@@ -641,7 +618,7 @@ def gaussian_filter1d(spec, sig):
 #       MC, Oxford, 14 March 2017
 
 def plot_weights_2d(xgrid, ygrid, weights, xlabel="log Age (yr)",
-                    ylabel="[M/H]", title="Mass Fraction", nodots=False,
+                    ylabel="[M/H]", title="Weights Fraction", nodots=False,
                     colorbar=True, **kwargs):
     """
     Plot an image of the 2-dim weights, as a function of xgrid and ygrid.
@@ -679,6 +656,7 @@ def plot_weights_2d(xgrid, ygrid, weights, xlabel="log Age (yr)",
 # MODIFICATION HISTORY:
 #   V1.0.0: Written. Michele Cappellari, Oxford, 8 February 2018
 #   V1.0.1: Changed imports for pPXF as a package. MC, Oxford, 16 April 2018
+#   V1.0.2: Removed Scipy next_fast_len usage. MC, Oxford, 25 January 2019
 
 def convolve_gauss_hermite(templates, velscale, start, npix,
                            velscale_ratio=1, sigma_diff=0, vsyst=0):
@@ -703,11 +681,11 @@ def convolve_gauss_hermite(templates, velscale, start, npix,
 
         spectrum = (spec @ pp.weights)*pp.mpoly + pp.apoly
 
-    :param spectra: log rebinned spectra
+    :param templates: array[npix_temp, ntemp] (or vector[npix_temp]) of log rebinned spectra
     :param velscale: velocity scale c*dLogLam in km/s
     :param start: parameters of the LOSVD [vel, sig, h3, h4,...]
-    :param npix: number of output pixels
-    :return: vector or array with convolved spectra
+    :param npix: number of desired output pixels (must be npix <= npix_temp)
+    :return: array[npix_temp, ntemp] (or vector[npix_temp]) with the convolved templates
 
     """
     npix_temp = templates.shape[0]
@@ -716,7 +694,7 @@ def convolve_gauss_hermite(templates, velscale, start, npix,
     start[:2] /= velscale
     vsyst /= velscale
 
-    npad = fftpack.next_fast_len(npix_temp)
+    npad = 2**int(np.ceil(np.log2(npix_temp)))
     templates_rfft = np.fft.rfft(templates, npad, axis=0)
     lvd_rfft = losvd_rfft(start, 1, start.shape, templates_rfft.shape[0],
                           1, vsyst, velscale_ratio, sigma_diff)
